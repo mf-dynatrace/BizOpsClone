@@ -756,9 +756,24 @@
                       <label class="block text-sm font-semibold text-dtcyan mb-2">Duration (minutes)</label>
                       <input id="loadrunner-duration" class="w-full p-3 rounded-lg bg-dtgray text-white border border-dtcyan" type="number" min="1" max="60" value="5">
                     </div>
+
+                    <div>
+                      <label class="block text-sm font-semibold text-dtcyan mb-2">Duration Mode</label>
+                      <select id="loadrunner-duration-mode" class="w-full p-3 rounded-lg bg-dtgray text-white border border-dtcyan focus:ring-2 focus:ring-dtcyan">
+                        <option value="fixed" selected>Fixed Duration</option>
+                        <option value="run-until-stopped">Run Until Stopped</option>
+                      </select>
+                      <p id="loadrunner-run-until-help" class="hidden text-xs text-yellow-300 mt-2">
+                        ♾️ Continuous mode active. Use "Stop Runner" to finish gracefully after the current journey completes.
+                      </p>
+                    </div>
                     
                     <button id="start-loadrunner-test" onclick="startLoadRunnerTest()" class="w-full bg-dtpurple hover:bg-dtcyan text-white hover:text-black font-bold rounded-lg p-4 shadow-card transition-all text-lg">
                       🚀 Start LoadRunner Test
+                    </button>
+
+                    <button id="stop-loadrunner-runner" onclick="stopLoadRunnerTest()" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg p-3 shadow-card transition-all text-base" disabled>
+                      🛑 Stop Runner
                     </button>
                     
                     <div class="p-3 bg-dtpurple bg-opacity-20 rounded-lg border border-dtpurple">
@@ -818,6 +833,25 @@
     const journeyOutput = document.getElementById('journey-output');
     const journeySources = document.getElementById('journey-sources');
     const journeyProvider = document.getElementById('journey-provider');
+    const loadRunnerDurationInput = document.getElementById('loadrunner-duration');
+    const loadRunnerDurationMode = document.getElementById('loadrunner-duration-mode');
+    const loadRunnerRunUntilHelp = document.getElementById('loadrunner-run-until-help');
+    const stopRunnerButton = document.getElementById('stop-loadrunner-runner');
+    const inlineStopButton = document.getElementById('stop-loadrunner-test');
+
+    function updateLoadRunnerDurationModeUI() {
+      if (!loadRunnerDurationMode || !loadRunnerDurationInput) return;
+      const runUntil = loadRunnerDurationMode.value === 'run-until-stopped';
+      loadRunnerDurationInput.disabled = runUntil;
+      if (loadRunnerRunUntilHelp) {
+        loadRunnerRunUntilHelp.classList.toggle('hidden', !runUntil);
+      }
+    }
+
+    if (loadRunnerDurationMode) {
+      loadRunnerDurationMode.addEventListener('change', updateLoadRunnerDurationModeUI);
+      updateLoadRunnerDurationModeUI();
+    }
     const simulateForm = document.getElementById('simulate-form');
     
     console.log('🔍 DOM elements found:');
@@ -3811,6 +3845,8 @@
       const resultsEl = document.getElementById('loadrunner-results');
       const profileSelect = document.getElementById('loadrunner-profile');
       const durationInput = document.getElementById('loadrunner-duration');
+      const durationModeSelect = document.getElementById('loadrunner-duration-mode');
+      const runUntilStopped = durationModeSelect && durationModeSelect.value === 'run-until-stopped';
 
       try {
         if (!window.lastJourney || !window.lastJourney.steps || !window.lastJourney.steps.length) {
@@ -3821,13 +3857,18 @@
 
         startBtn.disabled = true;
         startBtn.textContent = '🔄 Starting Test...';
+        if (stopRunnerButton) {
+          stopRunnerButton.disabled = true;
+          stopRunnerButton.textContent = '🛑 Stop Runner';
+        }
         statusEl.textContent = '🚀 Initializing LoadRunner test...';
         statusEl.className = 'mt-3 text-sm text-dtyellow font-medium';
         resultsEl.classList.add('hidden');
 
         const testConfig = {
           testProfile: profileSelect.value,
-          durationMinutes: parseInt(durationInput.value) || 5
+          durationMinutes: parseInt(durationInput.value) || 5,
+          runUntilStopped
         };
 
         const response = await fetch('/api/loadrunner/start-test', {
@@ -3845,6 +3886,10 @@
         if (result.success) {
           currentTestId = result.testId;
           const errorModeStatus = errorSimulationEnabled ? '🔴 With Errors' : '✅ Error-Free Mode';
+          if (stopRunnerButton) {
+            stopRunnerButton.disabled = false;
+            stopRunnerButton.textContent = '🛑 Stop Runner';
+          }
           statusEl.innerHTML = `
             ✅ Test started successfully!<br>
             📊 Method: ${result.method}<br>
@@ -3868,6 +3913,10 @@
         statusEl.className = 'mt-3 text-sm text-red-400 font-medium';
         startBtn.disabled = false;
         startBtn.textContent = '🚀 Start LoadRunner Test';
+        if (stopRunnerButton) {
+          stopRunnerButton.disabled = true;
+          stopRunnerButton.textContent = '🛑 Stop Runner';
+        }
       }
     };
 
@@ -3875,6 +3924,15 @@
       if (!currentTestId) return;
 
       try {
+        if (stopRunnerButton) {
+          stopRunnerButton.disabled = true;
+          stopRunnerButton.textContent = '⏳ Stop Requested...';
+        }
+        if (inlineStopButton) {
+          inlineStopButton.disabled = true;
+          inlineStopButton.textContent = '⏳ Stop Requested';
+        }
+
         const response = await fetch(`/api/loadrunner/stop/${currentTestId}`, {
           method: 'POST'
         });
@@ -3882,13 +3940,38 @@
         const result = await response.json();
         
         if (result.success) {
-          document.getElementById('loadrunner-status').textContent = '⏹️ Test stopped by user';
-          document.getElementById('loadrunner-status').className = 'mt-3 text-sm text-dtyellow font-medium';
-          stopTestPolling();
-          resetLoadRunnerUI();
+          const statusEl = document.getElementById('loadrunner-status');
+          if (result.mode === 'graceful') {
+            statusEl.innerHTML = '⏳ Stop requested... Finishing current journey before shutting down.';
+            statusEl.className = 'mt-3 text-sm text-dtyellow font-medium';
+          } else {
+            statusEl.textContent = '⏹️ Test stopped by user';
+            statusEl.className = 'mt-3 text-sm text-dtyellow font-medium';
+            stopTestPolling();
+            currentTestId = null;
+            resetLoadRunnerUI();
+          }
+        } else {
+          if (stopRunnerButton) {
+            stopRunnerButton.disabled = false;
+            stopRunnerButton.textContent = '🛑 Stop Runner';
+          }
+          if (inlineStopButton) {
+            inlineStopButton.disabled = false;
+            inlineStopButton.textContent = '⏹️ Stop Test';
+          }
+          alert(result.error || 'Unable to stop LoadRunner test.');
         }
       } catch (error) {
         console.error('Error stopping test:', error);
+        if (stopRunnerButton) {
+          stopRunnerButton.disabled = false;
+          stopRunnerButton.textContent = '🛑 Stop Runner';
+        }
+        if (inlineStopButton) {
+          inlineStopButton.disabled = false;
+          inlineStopButton.textContent = '⏹️ Stop Test';
+        }
       }
     };
 
@@ -3947,27 +4030,67 @@
       const statusEl = document.getElementById('loadrunner-status');
       const elapsedTime = status.startTime ? 
         Math.floor((new Date() - new Date(status.startTime)) / 1000) : 0;
+      const durationMinutes = status.testConfig && status.testConfig.duration
+        ? Math.ceil((status.testConfig.duration || 60) / 60)
+        : null;
+      const modeLabel = status.runUntilStopped
+        ? '♾️ Mode: Run Until Stopped'
+        : `⏱️ Mode: Fixed (${durationMinutes || 'N/A'} min)`;
+      const stopMessage = status.stopRequested
+        ? '<br>🛑 Stop requested. Completing current journey...'
+        : '';
       
       statusEl.innerHTML = `
         🏃 Test in progress...<br>
         📊 Method: ${status.method}<br>
         ⏱️ Elapsed: ${Math.floor(elapsedTime / 60)}:${(elapsedTime % 60).toString().padStart(2, '0')}<br>
-        👥 Virtual Users: ${status.testConfig.virtualUsers}<br>
+        👥 Virtual Users: ${(status.testConfig && status.testConfig.virtualUsers) || 1}<br>
         🎯 Company: ${status.journeyConfig.companyName}<br>
-        📋 Steps: ${status.journeyConfig.stepCount}
+        📋 Steps: ${status.journeyConfig.stepCount}<br>
+        ${modeLabel}
+        ${stopMessage}
       `;
       statusEl.className = 'mt-3 text-sm text-dtblue font-medium';
+
+      if (stopRunnerButton) {
+        if (status.status === 'running' && !status.stopRequested) {
+          stopRunnerButton.disabled = false;
+          stopRunnerButton.textContent = '🛑 Stop Runner';
+        } else if (status.stopRequested) {
+          stopRunnerButton.disabled = true;
+          stopRunnerButton.textContent = '⏳ Stop Requested...';
+        } else {
+          stopRunnerButton.disabled = true;
+          stopRunnerButton.textContent = '🛑 Stop Runner';
+        }
+      }
+
+      if (inlineStopButton) {
+        if (status.status === 'running' && !status.stopRequested) {
+          inlineStopButton.disabled = false;
+          inlineStopButton.textContent = '⏹️ Stop Test';
+        } else if (status.stopRequested) {
+          inlineStopButton.disabled = true;
+          inlineStopButton.textContent = '⏳ Stop Requested';
+        } else {
+          inlineStopButton.disabled = true;
+          inlineStopButton.textContent = '⏹️ Stop Test';
+        }
+      }
     }
 
     function showTestResults(status) {
       const statusEl = document.getElementById('loadrunner-status');
       const resultsEl = document.getElementById('loadrunner-results');
       const summaryEl = document.getElementById('loadrunner-summary');
+      const durationLabel = status.runUntilStopped
+        ? 'Until stopped'
+        : `${(status.testConfig.duration || 0) / 60} minutes`;
 
       if (status.status === 'completed') {
         statusEl.innerHTML = `
           ✅ Test completed successfully!<br>
-          ⏱️ Duration: ${status.testConfig.duration / 60} minutes<br>
+          ⏱️ Duration: ${durationLabel}<br>
           👥 Virtual Users: ${status.testConfig.virtualUsers}<br>
           📊 Method: ${status.method}
         `;
@@ -3978,7 +4101,7 @@
             <div>Company: <span class="text-dtcyan">${status.journeyConfig.companyName}</span></div>
             <div>Journey Steps: <span class="text-dtcyan">${status.journeyConfig.stepCount}</span></div>
             <div>Virtual Users: <span class="text-dtcyan">${status.testConfig.virtualUsers}</span></div>
-            <div>Test Duration: <span class="text-dtcyan">${status.testConfig.duration / 60} minutes</span></div>
+            <div>Test Duration: <span class="text-dtcyan">${durationLabel}</span></div>
             <div>Status: <span class="text-dtgreen">✅ Completed</span></div>
           </div>
         `;
@@ -3993,6 +4116,7 @@
         statusEl.className = 'mt-3 text-sm text-red-400 font-medium';
       }
 
+      currentTestId = null;
       resetLoadRunnerUI();
     }
 
@@ -4000,6 +4124,14 @@
       const startBtn = document.getElementById('start-loadrunner-test');
       startBtn.disabled = false;
       startBtn.textContent = '🚀 Start LoadRunner Test';
+      if (stopRunnerButton) {
+        stopRunnerButton.disabled = true;
+        stopRunnerButton.textContent = '🛑 Stop Runner';
+      }
+      if (inlineStopButton) {
+        inlineStopButton.disabled = true;
+        inlineStopButton.textContent = '⏹️ Stop Test';
+      }
     }
 
     // Handle generation method change

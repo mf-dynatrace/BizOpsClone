@@ -155,12 +155,14 @@ int Action() {
 
   // Generate step-specific transactions using same format as single simulation
   const stepTransactions = steps.map((step, index) => {
+    let stepNameLabel = `Step_${index + 1}`;
     try {
       if (!step || typeof step !== 'object') {
         throw new Error(`Invalid step at index ${index}: ${JSON.stringify(step)}`);
       }
       
       const stepName = step.stepName || step.name || `Step_${index + 1}`;
+      stepNameLabel = stepName;
       const stepDescription = step.description || step.stepDescription || '';
       const serviceName = step.serviceName || `${stepName}Service`;
       const estimatedDuration = step.estimatedDuration || step.duration || 5000;
@@ -266,7 +268,7 @@ int Action() {
 `;
     } catch (stepError) {
       console.error(`❌ Error processing step ${index}:`, stepError);
-      throw new Error(`Failed to process step ${index} (${stepName}): ${stepError.message}`);
+      throw new Error(`Failed to process step ${index} (${stepNameLabel}): ${stepError.message}`);
     }
   }).join('\n');
 
@@ -315,8 +317,12 @@ int Action() {
  * Generate LoadRunner scenario file for sequential load simulation
  */
 function generateScenarioFile(journeyConfig, testConfig, scriptPath) {
-  const { journeyInterval, duration } = testConfig;
-  const totalJourneys = Math.floor(duration / journeyInterval);
+  const { journeyInterval, duration, runUntilStopped } = testConfig;
+  const fallbackDuration = 86400; // 24 hours for run-until-stopped mode
+  const effectiveDuration = runUntilStopped ? fallbackDuration : (duration || fallbackDuration);
+  const totalJourneys = runUntilStopped
+    ? 0
+    : Math.max(1, Math.floor(effectiveDuration / journeyInterval));
   
   const scenarioContent = `[General]
 Version=1
@@ -331,7 +337,7 @@ LoadBehavior=goal
 Goal=VUsersPerSec
 GoalValue=1
 RampUp=10
-Duration=${duration}
+Duration=${effectiveDuration}
 RampDown=10
 IterationDelay=${journeyInterval}
 
@@ -344,7 +350,7 @@ IterationDelay=Fixed
 IterationDelaySeconds=${journeyInterval}
 AutomaticTransactions=1
 FailOnHttpErrors=1
-MaxIterations=${totalJourneys}
+MaxIterations=${runUntilStopped ? 0 : totalJourneys}
 `;
 
   return scenarioContent;
@@ -353,11 +359,13 @@ MaxIterations=${totalJourneys}
 /**
  * Create curl-based simulation script for sequential load testing
  */
-function generateCurlSimulation(journeyConfig, testConfig, testDir) {
-  const { journeyInterval, duration } = testConfig;
+function generateCurlSimulation(journeyConfig, testConfig, testDir, options = {}) {
+  const { journeyInterval, duration, runUntilStopped } = testConfig;
+  const { errorSimulationEnabled = true, stopFlagPath = path.join(testDir, '.stop-requested') } = options;
   const { companyName, domain, steps = [] } = journeyConfig;
   const testId = crypto.randomUUID();
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const effectiveDuration = runUntilStopped ? 0 : (duration || 600);
   
   // Demo customer data for realistic simulation - different customers for each test
   const customerProfiles = [
@@ -397,11 +405,17 @@ COMPANY_NAME="${companyName}"
 DOMAIN="${domain}"
 TEST_ID="${testId}"
 JOURNEY_INTERVAL=${journeyInterval}
-DURATION=${duration}
+DURATION=${effectiveDuration}
 BASE_URL="http://localhost:8080"
+  RUN_UNTIL_STOPPED=${runUntilStopped ? 1 : 0}
+  STOP_FILE="${stopFlagPath}"
 
-# Calculate total journeys for sequential execution
-TOTAL_JOURNEYS=$((DURATION / JOURNEY_INTERVAL))
+  # Calculate total journeys for sequential execution (only used for fixed duration)
+  if [ $RUN_UNTIL_STOPPED -eq 1 ]; then
+    TOTAL_JOURNEYS=0
+  else
+    TOTAL_JOURNEYS=$((DURATION / JOURNEY_INTERVAL))
+  fi
 
 # Dynatrace LoadRunner Integration Variables
 LSN="BizObs-Journey-LoadTest"  # Load Script Name
@@ -460,7 +474,7 @@ execute_customer_journey() {
   "traceId": "\$trace_id",
   "chained": true,
   "thinkTimeMs": 250,
-  "errorSimulationEnabled": ${errorSimulationEnabled || false},
+  "errorSimulationEnabled": ${errorSimulationEnabled ? 'true' : 'false'},
   "journey": {
     "journeyId": "\$correlation_id",
     "companyName": "${companyName}",
@@ -534,8 +548,25 @@ EOF
 journey_number=1
 echo "$(date): Starting sequential load simulation..."
 
-while [ $(date +%s) -lt $END_TIME ] && [ $journey_number -le $TOTAL_JOURNEYS ]; do
+if [ $RUN_UNTIL_STOPPED -eq 1 ]; then
+  echo "♾️  Run-until-stopped mode enabled. Use stop runner to finish gracefully."
+fi
+
+while true; do
+  if [ $RUN_UNTIL_STOPPED -eq 1 ]; then
+    if [ -f "$STOP_FILE" ]; then
+      echo "$(date): Stop requested. Finishing after in-flight journeys..."
+      break
+    fi
+  else
+    if [ $(date +%s) -ge $END_TIME ] || [ $journey_number -gt $TOTAL_JOURNEYS ]; then
+      break
+    fi
     echo "$(date): Executing customer journey $journey_number of $TOTAL_JOURNEYS"
+  fi
+  if [ $RUN_UNTIL_STOPPED -eq 1 ]; then
+    echo "$(date): Executing continuous customer journey $journey_number"
+  fi
     
     # Execute journey in background to allow for next journey scheduling
     execute_customer_journey $journey_number &
@@ -545,9 +576,18 @@ while [ $(date +%s) -lt $END_TIME ] && [ $journey_number -le $TOTAL_JOURNEYS ]; 
     journey_number=$((journey_number + 1))
     
     # Wait for journey interval before starting next journey
-    if [ $journey_number -le $TOTAL_JOURNEYS ] && [ $(date +%s) -lt $END_TIME ]; then
+    if [ $RUN_UNTIL_STOPPED -eq 1 ]; then
+      if [ -f "$STOP_FILE" ]; then
+        echo "$(date): Stop requested during wait window. Ending loop."
+        break
+      fi
+      echo "$(date): Waiting ${journeyInterval}s before next continuous journey..."
+      sleep $JOURNEY_INTERVAL
+    else
+      if [ $journey_number -le $TOTAL_JOURNEYS ] && [ $(date +%s) -lt $END_TIME ]; then
         echo "$(date): Waiting ${journeyInterval}s before next journey..."
         sleep $JOURNEY_INTERVAL
+      fi
     fi
 done
 
@@ -556,7 +596,7 @@ echo "$(date): Waiting for remaining journeys to complete..."
 wait
 
 echo "🏁 Sequential load test completed. Results in: $RESULTS_DIR"
-echo "📊 Total journeys executed: $((journey_number - 1))"
+  echo "📊 Total journeys executed: $((journey_number - 1))"
 
 # Generate summary report
 echo "📊 Generating test summary..."
@@ -637,7 +677,8 @@ router.post('/start-test', async (req, res) => {
       testProfile = 'medium',
       durationMinutes = 5,
       customConfig = null,
-      errorSimulationEnabled = true
+      errorSimulationEnabled = true,
+      runUntilStopped = false
     } = req.body;
 
     if (!journeyConfig || !journeyConfig.steps || journeyConfig.steps.length === 0) {
@@ -648,9 +689,15 @@ router.post('/start-test', async (req, res) => {
     }
 
     // Get test configuration
-    const testConfig = customConfig || {
+    const baseConfig = customConfig || {
       ...LOADRUNNER_CONFIGS[testProfile],
       duration: durationMinutes * 60
+    };
+
+    const testConfig = {
+      ...baseConfig,
+      duration: runUntilStopped ? null : baseConfig.duration,
+      runUntilStopped: Boolean(runUntilStopped)
     };
 
     const testId = crypto.randomUUID();
@@ -659,6 +706,15 @@ router.post('/start-test', async (req, res) => {
 
     // Create test directory
     await fs.mkdir(testDir, { recursive: true });
+
+    const stopFlagPath = path.join(testDir, '.stop-requested');
+    try {
+      await fs.unlink(stopFlagPath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        throw error;
+      }
+    }
 
     // Generate LoadRunner script
     const lrScript = generateLoadRunnerScript(journeyConfig, testConfig, errorSimulationEnabled);
@@ -671,7 +727,10 @@ router.post('/start-test', async (req, res) => {
     await fs.writeFile(scenarioPath, scenarioContent);
 
     // Generate curl simulation as fallback
-    const curlScript = generateCurlSimulation(journeyConfig, testConfig, testDir);
+    const curlScript = generateCurlSimulation(journeyConfig, testConfig, testDir, {
+      errorSimulationEnabled,
+      stopFlagPath
+    });
     const curlScriptPath = path.join(testDir, 'run_simulation.sh');
     await fs.writeFile(curlScriptPath, curlScript);
     await fs.chmod(curlScriptPath, '755');
@@ -686,7 +745,10 @@ router.post('/start-test', async (req, res) => {
       scriptPath,
       scenarioPath,
       curlScriptPath,
-      status: 'initialized'
+      status: 'initialized',
+      runUntilStopped: Boolean(runUntilStopped),
+      stopRequested: false,
+      stopFlagPath
     };
 
     activeTests.set(testId, testMetadata);
@@ -739,13 +801,31 @@ router.post('/start-test', async (req, res) => {
 
     testProcess.on('close', async (code) => {
       console.log(`[LoadRunner-${testId}] Test completed with code: ${code}`);
-      testMetadata.status = code === 0 ? 'completed' : 'failed';
+      if (testMetadata.stopRequested) {
+        testMetadata.status = 'stopped';
+      } else {
+        testMetadata.status = code === 0 ? 'completed' : 'failed';
+      }
       testMetadata.endTime = new Date().toISOString();
       testMetadata.exitCode = code;
 
       // Save test output
       await fs.writeFile(path.join(testDir, 'test_output.log'), output);
+
+      if (testMetadata.stopFlagPath) {
+        try {
+          await fs.unlink(testMetadata.stopFlagPath);
+        } catch (error) {
+          if (error.code !== 'ENOENT') {
+            console.warn(`[LoadRunner-${testId}] Unable to remove stop flag:`, error.message);
+          }
+        }
+      }
     });
+
+    const estimatedDurationLabel = testConfig.runUntilStopped
+      ? 'Until stopped manually'
+      : `${Math.ceil((testConfig.duration || 60) / 60)} minutes`;
 
     res.json({
       success: true,
@@ -753,7 +833,8 @@ router.post('/start-test', async (req, res) => {
       message: `LoadRunner test started for ${journeyConfig.companyName || 'test company'}`,
       testConfig,
       method: testMetadata.method,
-      estimatedDuration: `${Math.ceil(testConfig.duration / 60)} minutes`,
+      estimatedDuration: estimatedDurationLabel,
+      runUntilStopped: testConfig.runUntilStopped,
       resultsPath: testDir,
       monitoringUrl: `/api/loadrunner/status/${testId}`
     });
@@ -787,7 +868,7 @@ router.get('/status/:testId', async (req, res) => {
     const resultsPath = path.join(testData.testDir, 'results', 'test_summary.html');
     
     try {
-      const resultsExist = await fs.access(resultsPath);
+      await fs.access(resultsPath);
       results = {
         summaryPath: resultsPath,
         available: true
@@ -808,6 +889,8 @@ router.get('/status/:testId', async (req, res) => {
         companyName: testData.journeyConfig.companyName,
         stepCount: testData.journeyConfig.steps.length
       },
+      runUntilStopped: Boolean(testData.runUntilStopped),
+      stopRequested: Boolean(testData.stopRequested),
       results
     });
 
@@ -833,8 +916,10 @@ router.get('/tests', (req, res) => {
       endTime: data.endTime,
       companyName: data.journeyConfig.companyName,
       stepCount: data.journeyConfig.steps.length,
-      virtualUsers: data.testConfig.virtualUsers,
-      duration: data.testConfig.duration
+      virtualUsers: data.testConfig.virtualUsers || 1,
+      duration: data.testConfig.duration,
+      runUntilStopped: Boolean(data.runUntilStopped),
+      stopRequested: Boolean(data.stopRequested)
     }));
 
     res.json({
@@ -867,24 +952,51 @@ router.post('/stop/:testId', async (req, res) => {
       });
     }
 
+    const gracefulStopSupported = testData.runUntilStopped && testData.method === 'curl-simulation';
+
+    if (gracefulStopSupported) {
+      const stopFilePath = testData.stopFlagPath || path.join(testData.testDir, '.stop-requested');
+      testData.stopFlagPath = stopFilePath;
+      if (!testData.stopRequested) {
+        await fs.writeFile(stopFilePath, `stop requested at ${new Date().toISOString()}\n`);
+        testData.stopRequested = true;
+        testData.status = 'stopping';
+        return res.json({
+          success: true,
+          message: 'Stop requested. Runner will finish after the current journey.',
+          testId,
+          mode: 'graceful'
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: 'Stop already requested. Waiting for runner to exit.',
+        testId,
+        mode: 'graceful'
+      });
+    }
+
     if (testData.process && testData.status === 'running') {
       testData.process.kill('SIGTERM');
       testData.status = 'stopped';
+      testData.stopRequested = true;
       testData.endTime = new Date().toISOString();
 
-      res.json({
+      return res.json({
         success: true,
         message: 'Test stopped successfully',
-        testId
-      });
-    } else {
-      res.json({
-        success: true,
-        message: 'Test was not running',
         testId,
-        status: testData.status
+        mode: 'force'
       });
     }
+
+    res.json({
+      success: true,
+      message: 'Test was not running',
+      testId,
+      status: testData.status
+    });
 
   } catch (error) {
     res.status(500).json({
