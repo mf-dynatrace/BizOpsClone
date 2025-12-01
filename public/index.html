@@ -753,15 +753,12 @@
                     </div>
                     
                     <div>
-                      <label class="block text-sm font-semibold text-dtcyan mb-2">Duration (minutes)</label>
-                      <input id="loadrunner-duration" class="w-full p-3 rounded-lg bg-dtgray text-white border border-dtcyan" type="number" min="1" max="60" value="5">
-                    </div>
-
-                    <div>
-                      <label class="block text-sm font-semibold text-dtcyan mb-2">Duration Mode</label>
-                      <select id="loadrunner-duration-mode" class="w-full p-3 rounded-lg bg-dtgray text-white border border-dtcyan focus:ring-2 focus:ring-dtcyan">
-                        <option value="fixed" selected>Fixed Duration</option>
-                        <option value="run-until-stopped">Run Until Stopped</option>
+                      <label class="block text-sm font-semibold text-dtcyan mb-2">Duration</label>
+                      <select id="loadrunner-duration" class="w-full p-3 rounded-lg bg-dtgray text-white border border-dtcyan focus:ring-2 focus:ring-dtcyan">
+                        <option value="2">2 minutes</option>
+                        <option value="5" selected>5 minutes</option>
+                        <option value="10">10 minutes</option>
+                        <option value="continuous">Continuous (run until stopped)</option>
                       </select>
                       <p id="loadrunner-run-until-help" class="hidden text-xs text-yellow-300 mt-2">
                         ♾️ Continuous mode active. Use "Stop Runner" to finish gracefully after the current journey completes.
@@ -833,24 +830,22 @@
     const journeyOutput = document.getElementById('journey-output');
     const journeySources = document.getElementById('journey-sources');
     const journeyProvider = document.getElementById('journey-provider');
-    const loadRunnerDurationInput = document.getElementById('loadrunner-duration');
-    const loadRunnerDurationMode = document.getElementById('loadrunner-duration-mode');
+    const loadRunnerDurationSelect = document.getElementById('loadrunner-duration');
     const loadRunnerRunUntilHelp = document.getElementById('loadrunner-run-until-help');
     const stopRunnerButton = document.getElementById('stop-loadrunner-runner');
     const inlineStopButton = document.getElementById('stop-loadrunner-test');
 
-    function updateLoadRunnerDurationModeUI() {
-      if (!loadRunnerDurationMode || !loadRunnerDurationInput) return;
-      const runUntil = loadRunnerDurationMode.value === 'run-until-stopped';
-      loadRunnerDurationInput.disabled = runUntil;
+    function updateLoadRunnerDurationUI() {
+      if (!loadRunnerDurationSelect) return;
+      const runUntil = loadRunnerDurationSelect.value === 'continuous';
       if (loadRunnerRunUntilHelp) {
         loadRunnerRunUntilHelp.classList.toggle('hidden', !runUntil);
       }
     }
 
-    if (loadRunnerDurationMode) {
-      loadRunnerDurationMode.addEventListener('change', updateLoadRunnerDurationModeUI);
-      updateLoadRunnerDurationModeUI();
+    if (loadRunnerDurationSelect) {
+      loadRunnerDurationSelect.addEventListener('change', updateLoadRunnerDurationUI);
+      updateLoadRunnerDurationUI();
     }
     const simulateForm = document.getElementById('simulate-form');
     
@@ -902,6 +897,29 @@
 
     let lastJourney = null;
     let currentJourneyData = null;
+    window.lastJourney = window.lastJourney || null;
+    window.currentJourneyData = window.currentJourneyData || null;
+
+    function getActiveJourney() {
+      if (window.lastJourney && Array.isArray(window.lastJourney.steps) && window.lastJourney.steps.length > 0) {
+        return window.lastJourney;
+      }
+      if (lastJourney && Array.isArray(lastJourney.steps) && lastJourney.steps.length > 0) {
+        window.lastJourney = lastJourney;
+        return lastJourney;
+      }
+      if (window.currentJourneyData && window.currentJourneyData.journey && Array.isArray(window.currentJourneyData.journey.steps) && window.currentJourneyData.journey.steps.length > 0) {
+        window.lastJourney = {
+          ...window.currentJourneyData.journey,
+          additionalFields: window.currentJourneyData.additionalFields || window.currentJourneyData.journey.additionalFields || {},
+          customerProfile: window.currentJourneyData.customerProfile || window.currentJourneyData.journey.customerProfile || {},
+          traceMetadata: window.currentJourneyData.traceMetadata || window.currentJourneyData.journey.traceMetadata || {}
+        };
+        lastJourney = window.lastJourney;
+        return window.lastJourney;
+      }
+      return null;
+    }
 
     // Error simulation state
     let errorSimulationEnabled = true;
@@ -1136,7 +1154,9 @@
             customerProfile: parsedResponse.customerProfile || parsedResponse.journey.customerProfile || {},
             traceMetadata: parsedResponse.traceMetadata || parsedResponse.journey.traceMetadata || {}
           };
+          lastJourney = window.lastJourney;
           window.currentJourneyData = parsedResponse;
+          currentJourneyData = window.currentJourneyData;
           console.log('✅ Global variables set with complete data including error configuration:', {lastJourney: window.lastJourney, currentJourneyData: window.currentJourneyData});
 
           // Display journey with additional fields info
@@ -2049,10 +2069,12 @@
         console.log('🎯 Restoring journey data...');
         if (promptState.lastJourney && typeof window !== 'undefined') {
           window.lastJourney = promptState.lastJourney;
+          lastJourney = window.lastJourney;
           console.log('✅ Restored window.lastJourney');
         }
         if (promptState.currentJourneyData && typeof window !== 'undefined') {
           window.currentJourneyData = promptState.currentJourneyData;
+          currentJourneyData = window.currentJourneyData;
           console.log('✅ Restored window.currentJourneyData');
           
           // Update journey output displays
@@ -2763,9 +2785,11 @@
         // Restore journey data
         if (prompt.lastJourney) {
           window.lastJourney = prompt.lastJourney;
+          lastJourney = window.lastJourney;
         }
         if (prompt.currentJourneyData) {
           window.currentJourneyData = prompt.currentJourneyData;
+          currentJourneyData = window.currentJourneyData;
         }
         
           alert('✅ Loaded configuration "' + prompt.name + '"');
@@ -3020,6 +3044,7 @@
               { stepName: 'Transaction', description: 'Complete transaction' }
             ]
           };
+          window.lastJourney = lastJourney;
           
           simStatus.textContent = '✅ Test journey created! Starting simulation...';
         }
@@ -3424,6 +3449,8 @@
           // Clear global variables
           window.lastJourney = null;
           window.currentJourneyData = null;
+          lastJourney = null;
+          currentJourneyData = null;
           
           // Clear form inputs safely
           const companyNameEl = document.getElementById('companyName');
@@ -3844,16 +3871,20 @@
       const statusEl = document.getElementById('loadrunner-status');
       const resultsEl = document.getElementById('loadrunner-results');
       const profileSelect = document.getElementById('loadrunner-profile');
-      const durationInput = document.getElementById('loadrunner-duration');
-      const durationModeSelect = document.getElementById('loadrunner-duration-mode');
-      const runUntilStopped = durationModeSelect && durationModeSelect.value === 'run-until-stopped';
+      const durationSelect = document.getElementById('loadrunner-duration');
+      const selectedDuration = durationSelect ? durationSelect.value : '5';
+      const runUntilStopped = selectedDuration === 'continuous';
+      const durationMinutes = runUntilStopped ? 5 : (parseInt(selectedDuration, 10) || 5);
 
       try {
-        if (!window.lastJourney || !window.lastJourney.steps || !window.lastJourney.steps.length) {
+        const activeJourney = getActiveJourney();
+        if (!activeJourney || !activeJourney.steps || !activeJourney.steps.length) {
           statusEl.textContent = '⚠️ No journey available! Please generate a journey first.';
           statusEl.className = 'mt-3 text-sm text-red-400 font-medium';
           return;
         }
+        window.lastJourney = activeJourney;
+        lastJourney = activeJourney;
 
         startBtn.disabled = true;
         startBtn.textContent = '🔄 Starting Test...';
@@ -3867,7 +3898,7 @@
 
         const testConfig = {
           testProfile: profileSelect.value,
-          durationMinutes: parseInt(durationInput.value) || 5,
+          durationMinutes,
           runUntilStopped
         };
 
@@ -3875,7 +3906,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            journeyConfig: window.lastJourney,
+            journeyConfig: activeJourney,
             errorSimulationEnabled: errorSimulationEnabled,
             ...testConfig
           })
@@ -4124,6 +4155,10 @@
       const startBtn = document.getElementById('start-loadrunner-test');
       startBtn.disabled = false;
       startBtn.textContent = '🚀 Start LoadRunner Test';
+      if (loadRunnerDurationSelect) {
+        loadRunnerDurationSelect.value = '5';
+        updateLoadRunnerDurationUI();
+      }
       if (stopRunnerButton) {
         stopRunnerButton.disabled = true;
         stopRunnerButton.textContent = '🛑 Stop Runner';
@@ -5838,7 +5873,9 @@ Requirements:
                 customerProfile: parsedResponse.customerProfile || parsedResponse.journey.customerProfile || {},
                 traceMetadata: parsedResponse.traceMetadata || parsedResponse.journey.traceMetadata || {}
               };
+              lastJourney = window.lastJourney;
               window.currentJourneyData = parsedResponse;
+              currentJourneyData = window.currentJourneyData;
 
               // Display journey with additional fields info
               const displayData = {
