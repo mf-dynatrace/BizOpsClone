@@ -28,11 +28,21 @@ const activeTests = new Map();
  * Uses the same journey format as single simulation but generates multiple customers
  */
 function generateLoadRunnerScript(journeyConfig, testConfig, errorSimulationEnabled = true) {
-  const { companyName, domain, steps = [], additionalFields = {} } = journeyConfig;
-  const testId = crypto.randomUUID();
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  
-  // Generate LSN, TSN, LTN based on company and test config
+  try {
+    const { companyName, domain, steps = [], additionalFields = {} } = journeyConfig;
+    const testId = crypto.randomUUID();
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    
+    // Validate inputs
+    if (!companyName || !domain) {
+      throw new Error(`Invalid journey config: missing companyName or domain`);
+    }
+    
+    if (!Array.isArray(steps)) {
+      throw new Error(`Invalid steps: expected array, got ${typeof steps}`);
+    }
+    
+    console.log(`🔧 Generating LoadRunner script for ${companyName} with ${steps.length} steps`);
   const LSN = `BizObs_${companyName.replace(/\s+/g, '')}_${domain}_Journey`;
   const LTN = `${companyName.replace(/\s+/g, '')}_LoadTest_${timestamp.split('T')[0].replace(/-/g, '')}`;
   
@@ -145,16 +155,23 @@ int Action() {
 
   // Generate step-specific transactions using same format as single simulation
   const stepTransactions = steps.map((step, index) => {
-    const stepName = step.stepName || step.name || `Step_${index + 1}`;
-    const stepDescription = step.description || step.stepDescription || '';
-    const serviceName = step.serviceName || `${stepName}Service`;
-    const estimatedDuration = step.estimatedDuration || step.duration || 5000;
-    const substeps = step.substeps || [];
-    
-    // Convert duration to seconds for think time
-    const thinkTimeSeconds = Math.floor(estimatedDuration / 1000) || 5;
-    
-    return `
+    try {
+      if (!step || typeof step !== 'object') {
+        throw new Error(`Invalid step at index ${index}: ${JSON.stringify(step)}`);
+      }
+      
+      const stepName = step.stepName || step.name || `Step_${index + 1}`;
+      const stepDescription = step.description || step.stepDescription || '';
+      const serviceName = step.serviceName || `${stepName}Service`;
+      const estimatedDuration = step.estimatedDuration || step.duration || 5000;
+      const substeps = step.substeps || [];
+      
+      // Convert duration to seconds for think time
+      const thinkTimeSeconds = Math.floor(estimatedDuration / 1000) || 5;
+      
+      console.log(`Step ${index}: ${stepName}, duration: ${estimatedDuration}ms, thinkTime: ${thinkTimeSeconds}s`);
+      
+      return `
     // Step ${index + 1}: ${stepName} - ${stepDescription}
     lr_save_string("${stepName}", "TSN");  // Test Step Name for this step
     
@@ -247,6 +264,10 @@ int Action() {
     // Variable think time based on step complexity
     lr_think_time(${thinkTimeSeconds});
 `;
+    } catch (stepError) {
+      console.error(`❌ Error processing step ${index}:`, stepError);
+      throw new Error(`Failed to process step ${index} (${stepName}): ${stepError.message}`);
+    }
   }).join('\n');
 
   const scriptFooter = `
@@ -284,6 +305,10 @@ int Action() {
 }`;
 
   return scriptHeader + stepTransactions + scriptFooter;
+  } catch (error) {
+    console.error('❌ Error generating LoadRunner script:', error);
+    throw new Error(`Failed to generate LoadRunner script: ${error.message}`);
+  }
 }
 
 /**
