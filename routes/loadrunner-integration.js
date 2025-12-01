@@ -245,7 +245,7 @@ int Action() {
     lr_output_message("Completed step: {TSN} - Response time: %d ms", lr_get_transaction_duration("{TSN}"));
     
     // Variable think time based on step complexity
-    lr_think_time(${Math.floor(estimatedDuration / 1000)});
+    lr_think_time(${thinkTimeSeconds});
 `;
   }).join('\n');
 
