@@ -2524,14 +2524,44 @@
         
         console.log(`✅ Loaded ${allPrompts.length} configurations from localStorage`);
         
-        // Optional: Try to load from server as backup (but don't override localStorage)
+        // Optional: Try to load from server and merge with localStorage
         try {
           const serverResponse = await fetch('/api/admin/configs');
           if (serverResponse.ok) {
             const serverData = await serverResponse.json();
             if (serverData.ok && serverData.configs) {
-              console.log(`📡 Server has ${serverData.configs.length} configurations available as backup`);
-              // Note: We prioritize localStorage to maintain full prompt data
+              console.log(`📡 Server has ${serverData.configs.length} configurations, loading full data...`);
+              
+              // Load full server configs
+              for (const serverConfig of serverData.configs) {
+                try {
+                  const fullConfigResponse = await fetch(`/api/admin/configs/${serverConfig.id}`);
+                  if (fullConfigResponse.ok) {
+                    const fullConfigData = await fullConfigResponse.json();
+                    if (fullConfigData.ok && fullConfigData.config) {
+                      // Check if we already have this config in localStorage
+                      const existingIndex = allPrompts.findIndex(p => p.id === serverConfig.id);
+                      if (existingIndex === -1) {
+                        // Add server config to localStorage
+                        const serverPrompt = {
+                          ...fullConfigData.config,
+                          source: 'server',
+                          id: serverConfig.id,
+                          name: serverConfig.name,
+                          timestamp: serverConfig.timestamp
+                        };
+                        allPrompts.push(serverPrompt);
+                        console.log(`📥 Loaded server config: ${serverConfig.name}`);
+                      }
+                    }
+                  }
+                } catch (configError) {
+                  console.warn(`⚠️ Error loading server config ${serverConfig.id}:`, configError.message);
+                }
+              }
+              
+              // Save merged configs back to localStorage
+              localStorage.setItem(storageKey, JSON.stringify(allPrompts));
             }
           }
         } catch (serverError) {
@@ -3783,7 +3813,7 @@
       const durationInput = document.getElementById('loadrunner-duration');
 
       try {
-        if (!lastJourney || !lastJourney.steps || !lastJourney.steps.length) {
+        if (!window.lastJourney || !window.lastJourney.steps || !window.lastJourney.steps.length) {
           statusEl.textContent = '⚠️ No journey available! Please generate a journey first.';
           statusEl.className = 'mt-3 text-sm text-red-400 font-medium';
           return;
