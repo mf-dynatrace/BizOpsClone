@@ -299,6 +299,9 @@
           </div>
         </div>
         <div class="flex items-center space-x-3">
+          <div class="px-3 py-1 rounded-full bg-dtgray/10 border border-dtgray text-dtcyan text-xs font-medium">
+            v0.1
+          </div>
           <div class="px-3 py-1 rounded-full bg-dtgreen/20 border border-dtgreen text-dtgreen text-xs font-medium">
             ✅ READY
           </div>
@@ -779,8 +782,11 @@
                     </div>
                   </div>
                   
-                  <div class="space-y-4">
-                    <h4 class="text-lg font-bold text-white mb-2">📊 Test Status & Results</h4>
+                    <div class="space-y-4">
+                    <div class="flex items-center gap-3 mb-2">
+                      <button id="app-version" class="text-xs bg-dtgray px-3 py-1 rounded-full text-white font-semibold">v0.1</button>
+                      <h4 class="text-lg font-bold text-white mb-0">📊 Test Status & Results</h4>
+                    </div>
                     <div id="loadrunner-status" class="p-3 bg-dtgray rounded-lg text-sm">
                       Ready to start load test
                     </div>
